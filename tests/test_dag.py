@@ -5,14 +5,15 @@ import pytest
 
 from dag import dag as dag_mod
 from dag.dag import (
+    LoggerFactory,
     Provider,
     ProviderRegistry,
     Source,
-    VLevel,
     make,
     provider,
 )
 from dag.dag import _as_arg
+from dag.logger import Logger
 
 
 def fn(func):
@@ -259,34 +260,39 @@ def test_explicit_redeclare_after_provider_triggers_conformance():
 
 
 # --------------------------------------------------------------------------- #
-# VLevel
+# LoggerFactory
 # --------------------------------------------------------------------------- #
 
 
-def test_vlevel_default_zero():
-    assert VLevel({})("anything") == 0
+def test_loggerfactory_default_zero():
+    assert LoggerFactory({}).level("anything") == 0
 
 
-def test_vlevel_reads_verbosity():
-    assert VLevel({"verbosity": 3})("stage") == 3
+def test_loggerfactory_reads_verbosity():
+    assert LoggerFactory({"verbosity": 3}).level("stage") == 3
 
 
-def test_vlevel_vmodule_overrides():
-    v = VLevel({"verbosity": 1, "vmodule": "a:5,b:2"})
-    assert v("a") == 5
-    assert v("b") == 2
-    assert v("c") == 1  # falls back to the global level
+def test_loggerfactory_vmodule_overrides():
+    f = LoggerFactory({"verbosity": 1, "vmodule": "a:5,b:2"})
+    assert f.level("a") == 5
+    assert f.level("b") == 2
+    assert f.level("c") == 1  # falls back to the global level
+    assert f.level() == 1  # no stage -> global level
 
 
-def test_vlevel_bad_vmodule_raises():
+def test_loggerfactory_bad_vmodule_raises():
     with pytest.raises(ValueError, match="vmodule"):
-        VLevel({"vmodule": "garbage"})
+        LoggerFactory({"vmodule": "garbage"})
     with pytest.raises(ValueError, match="vmodule"):
-        VLevel({"vmodule": "a:3x"})  # fullmatch rejects trailing junk
+        LoggerFactory({"vmodule": "a:3x"})  # fullmatch rejects trailing junk
 
 
-def test_vlevel_empty_entries_skipped():
-    assert VLevel({"verbosity": 0, "vmodule": "a:5,"})("a") == 5
+def test_loggerfactory_empty_entries_skipped():
+    assert LoggerFactory({"verbosity": 0, "vmodule": "a:5,"}).level("a") == 5
+
+
+def test_loggerfactory_builds_logger():
+    assert LoggerFactory({"verbosity": 2}).logger("a").verbosity == 2
 
 
 # --------------------------------------------------------------------------- #
@@ -306,26 +312,28 @@ def test_make_chain(reg):
     assert make("second_output", input="x")["second_output"] == "x-first-second"
 
 
-def test_make_injects_verbosity_non_optional(reg):
+def test_make_injects_logger_non_optional(reg):
+    # `logger` is the single ambient resource; a provider may require it
+    # directly (no provider produces it) and receives a per-stage Logger.
     @provider
-    def thing(verbosity: int) -> str:  # required, not optional
-        return f"v={verbosity}"
+    def thing(logger: Logger) -> str:  # required, not optional
+        return f"v={logger.verbosity}"
 
     assert make("thing")["thing"] == "v=0"
     assert make("thing", verbosity=2)["thing"] == "v=2"
 
 
-def test_make_vmodule_per_provider_override(reg):
+def test_make_vmodule_per_provider_logger_level(reg):
     @provider
-    def a(verbosity: int) -> int:
-        return verbosity
+    def a(logger: Logger) -> int:
+        return logger.verbosity
 
     @provider
-    def b(a: int, verbosity: int) -> int:
-        return verbosity
+    def b(a: int, logger: Logger) -> int:
+        return logger.verbosity
 
     out = make("b", verbosity=1, vmodule="a:7")
-    assert out["a"] == 7  # per-provider override
+    assert out["a"] == 7  # per-provider override via the injected logger
     assert out["b"] == 1  # global level
 
 

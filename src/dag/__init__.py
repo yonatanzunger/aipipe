@@ -3,19 +3,20 @@ from dag.dag import (
     ProviderRegistry,
     ResourceInfo,
     Source,
-    VLevel,
     make,
     provider,
     registry,
     resource,
 )
+from dag.logger import Logger, LoggerFactory
 
 __all__ = [
+    "Logger",
+    "LoggerFactory",
     "Provider",
     "ProviderRegistry",
     "ResourceInfo",
     "Source",
-    "VLevel",
     "make",
     "provider",
     "registry",

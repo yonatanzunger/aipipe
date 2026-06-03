@@ -39,10 +39,9 @@ function:
 
     resource("verbosity", int)
 
-"verbosity" is actually a special global resource managed using the VLevel class below.
+"verbosity" is actually a special global resource managed using the LoggerFactory class below.
 """
 
-import re
 import argparse
 from beartype.door import is_subhint
 from copy import copy
@@ -52,6 +51,7 @@ from collections.abc import Callable
 from typing import Union, get_origin, get_args, Any, Iterable
 from inspect import signature, Signature
 from types import NoneType
+from dag.logger import Logger, LoggerFactory
 
 
 # TODO: It would be really nice if we had a type that could be used to describe a type signature. I'll
@@ -122,12 +122,17 @@ class ResourceInfo:
     type: TypeSig
     # Where the canonical type came from; higher-priority sources win on conflict.
     source: Source
+
     # Aliases usable in argparse
     aliases: list[str] | None
     # Documentation for command-line flags
     help: str | None
+    # True if this resource is available on the command-line.
+    available_on_cl: bool = True
 
     def add_argument(self, parser: argparse.ArgumentParser) -> None:
+        if not self.available_on_cl:
+            return
         names = [_as_arg(self.name)]
         if self.aliases is not None:
             names.extend(_as_arg(alias) for alias in self.aliases)
@@ -177,6 +182,7 @@ class ProviderRegistry:
         source: Source = Source.EXPLICIT,
         aliases: list[str] | None = None,
         help: str | None = None,
+        available_on_cl: bool = True,
     ) -> None:
         """Declare that a resource exists and has a given type.
 
@@ -200,8 +206,11 @@ class ProviderRegistry:
             name=name,
             type=chosen_type,
             source=chosen_source,
-            aliases=aliases if aliases is not None else (prior.aliases if prior else None),
+            aliases=aliases
+            if aliases is not None
+            else (prior.aliases if prior else None),
             help=help if help is not None else (prior.help if prior else None),
+            available_on_cl=available_on_cl,
         )
         self._recheck(name)
 
@@ -319,41 +328,35 @@ def resource(
     *,
     aliases: list[str] | None = None,
     help: str | None = None,
+    available_on_cl: bool = True,
 ) -> None:
     """Declare the existence of a resource."""
-    registry.declare_resource(name, annot, aliases=aliases, help=help)
-
-
-class VLevel(object):
-    """Helper class to compute verbosity levels"""
-
-    PATTERN = re.compile("([a-zA-Z_][a-zA-Z0-9_]*):([0-9]+)")
-    resource("verbosity", int, aliases=["v"], help="Verbosity level for DAG execution")
-    resource(
-        "vmodule",
-        str,
-        help="Per-provider verbosity overrides. Format as provider:value,provider:value",
+    registry.declare_resource(
+        name, annot, aliases=aliases, help=help, available_on_cl=available_on_cl
     )
 
-    def __init__(self, resources: dict[str, Any]):
-        self.verbosity: int = resources.get("verbosity") or 0
-        self.vmodule: dict[str, int] = {}
-        if "vmodule" in resources:
-            for entry in resources["vmodule"].split(","):
-                if not entry:
-                    continue
-                match = self.PATTERN.fullmatch(entry)
-                if match is None:
-                    raise ValueError(
-                        f"Unexpected value in --vmodule '{entry}': should look like 'resource:level'"
-                    )
-                self.vmodule[match[1]] = int(match[2])
 
-    def __call__(self, stage: str) -> int:
-        return self.vmodule.get(stage, self.verbosity)
+# The resources the logging system uses. `verbosity` and `vmodule` are
+# user-facing inputs that LoggerFactory reads; `logger` is hand-forged by make()
+# and injected into every provider call (never built by the graph), so it's the
+# single ambient resource a provider declares to get logging.
+resource("verbosity", int, aliases=["v"], help="Verbosity level for DAG execution")
+resource(
+    "vmodule",
+    str,
+    help="Per-provider verbosity overrides. Format as provider:value,provider:value",
+)
+resource("logger", annot=Logger, available_on_cl=False)
+
+_AMBIENT_RESOURCES = ("logger",)
 
 
-def make(targets: str | Iterable[str], **kwargs: Any) -> dict[str, Any]:
+def make(
+    targets: str | Iterable[str],
+    *,
+    logger_factory: LoggerFactory | None = None,
+    **kwargs: Any,
+) -> dict[str, Any]:
     """Actually build one or more targets.
 
     target: Either the name of a target resource to provide, or an iterable of names.
@@ -365,14 +368,26 @@ def make(targets: str | Iterable[str], **kwargs: Any) -> dict[str, Any]:
     if isinstance(targets, str):
         targets = (targets,)
     resources = copy(kwargs)
-    vlevel = VLevel(resources)
-    # verbosity is always available, so providers may require it directly, and
-    # is re-injected per-provider below with any vmodule override applied.
-    resources.setdefault("verbosity", vlevel.verbosity)
-    recipe = registry.recipe(targets, resources.keys())
+    logger_factory = logger_factory or LoggerFactory(resources)
+    logger = logger_factory.logger()
+    # `logger` is hand-forged below and injected into every provider call rather
+    # than built by the graph, so it's always available to providers that
+    # declare it.
+    recipe = registry.recipe(targets, [*resources.keys(), *_AMBIENT_RESOURCES])
+
+    logger.log(1, "Targets", sorted(list(targets)))
+    if logger.verbosity == 1:
+        logger.log(1, "Inputs", sorted(list(resources.keys())))
+    elif logger.verbosity > 1:
+        logger.header(1, "Inputs")
+        for key, value in sorted(resources.items()):
+            logger.log(1, key, value, indent=2)
+    logger.log(1, "Build order", list(provider.name for provider in recipe))
+
     for provider in recipe:
+        logger.log(1, "Building", provider.name)
         resources[provider.name] = provider(
-            **{**resources, "verbosity": vlevel(provider.name)}
+            **{**resources, "logger": logger_factory.logger(provider.name)}
         )
 
     return resources

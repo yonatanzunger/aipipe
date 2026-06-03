@@ -15,13 +15,13 @@ Example::
 from __future__ import annotations
 
 import re
-import textwrap
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from llm import complete
 
 from dag.dag import Provider, registry, resource
+from dag.logger import Logger
 from dag.markdown import MarkdownDocument
 
 if TYPE_CHECKING:
@@ -71,30 +71,17 @@ class LLMStage:
         """Substitute ``{{var}}`` placeholders using *values* (stringified)."""
         return _VAR.sub(lambda m: str(values[m.group(1)]), self.template)
 
-    def __call__(self, verbosity: int = 0, **kwargs: Any) -> str:
+    def __call__(self, logger: Logger, **kwargs: Any) -> str:
         """Render the template from the supplied resources and complete it."""
         model = self.model or kwargs.get("model")
         prompt = self.render(kwargs)
-        self._vprint("Model:", model, verbosity)
-        self._vprint("Prompt:", prompt, verbosity)
+        logger.log(1, "Model", model)
+        logger.log(1, "Prompt", prompt)
         response = complete(
             prompt, system=self.system, model=model, backend=self.backend
         )
-        self._vprint("Response:", response, verbosity)
+        logger.log(1, "Response", response)
         return response
-
-    TEXT_WIDTH = 100
-
-    def _vprint(self, header: str, text: str, verbosity: int) -> None:
-        if verbosity <= 0:
-            return
-        elif len(text) + len(header) + 1 < self.TEXT_WIDTH:
-            print(f"{header} {text}")
-        elif verbosity == 1:
-            print(f"{header} {text[: self.TEXT_WIDTH - len(header) - 4]}...")
-        else:
-            print(header)
-            print(textwrap.wrap(text, self.TEXT_WIDTH))
 
     def as_provider(self) -> Provider:
         """Build the :class:`~dag.dag.Provider` representing this stage.
@@ -108,6 +95,10 @@ class LLMStage:
         optionally_requires: dict[str, Any] = {}
         if "model" not in requires:
             optionally_requires["model"] = str | None
+        # The ambient logger is injected by make(); declare it (optional) so
+        # Provider.__call__ forwards it to __call__.
+        if "logger" not in requires:
+            optionally_requires["logger"] = Logger
         return Provider(
             name=self.name,
             func=self,
