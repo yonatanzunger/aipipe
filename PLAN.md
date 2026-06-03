@@ -145,6 +145,55 @@ when that provider is actually selected.
 - Confirm exact dist names/versions for the Azure, Gemini, and Copilot SDKs when
   wiring `pyproject.toml`.
 
+### Item 1 — LOCKED DECISIONS (agreed 2026-06-03)
+
+Package lives at top-level `src/llm/` (importable `llm`); `dag` may depend on it,
+never the reverse. Coupling audit: most of clarity's coupling is mechanical or
+already-optional (`transcript=None` cleanly disables all compaction in every
+backend; `Transcript` hints are `TYPE_CHECKING`-only; API-key clients + claude_sdk
+already lazy-import). The real decisions:
+
+- **A. System prompt / paths (fixes chat.py + claude_sdk + github_copilot at
+  once).** Backends do **no** prompt construction — `chat(system_prompt=…)` is
+  passed through verbatim (pure passthrough, no base prompt). Drop
+  `project_dir`/`clarity_agent_dir`/`protocol_dir` from all three constructors.
+  This removes the entire `app_paths` coupling.
+- **B. Config + credential layer.**
+  - Port `Settings` as the persisted store; retarget storage to an aipipe data
+    dir (platformdirs, e.g. `~/.config/aipipe/`); rename keyring `SERVICE`
+    `"clarity"→"aipipe"`; keep precedence `settings.json < .env < keyring < env`.
+  - **Secrets via keyring** (+ `python-dotenv`) — keep both.
+  - Rename clarity-specific field keys (`CLARITY_MODEL_DEFAULT`,
+    `CLARITY_TENANT_ID`, `CLARITY_LLM_PROVIDER`, …) → `AIPIPE_*`; keep standard
+    SDK names (`ANTHROPIC_API_KEY`, …).
+  - **Drop `process_registry`** entirely (no "processes" in aipipe): remove
+    `resolve(process_name)`, `_DEFAULT_PROCESS_TIERS`, `process_overrides`.
+  - **Keep tiers** `default`/`deep`/`fast` + `--model`/`--model-deep`/`--model-fast`.
+  - Keep the `LLMConfig.create()` auto-detect facade; make `Settings` injectable/
+    optional; **keep write-back** of resolved provider/auth.
+- **C. Tools in the SDK backend.** Don't port `ai_actions`; stub
+  `format_tools_as_cli → ""`. Keep the `ChatBackend` tool-loop interface, ship
+  the SDK backend tools-unsupported for now (LLMStage needs text only).
+- **D. Lazy imports / extras.** All six impls gate their SDK behind a lazy import
+  + optional extra; fix `github_copilot`'s top-level `from copilot import …` to be
+  lazy. Remove copilot's dead `token` param.
+- **E. Packaging.** `azure-ai-inference` is prerelease-only (`1.0.0b9`) → extra
+  needs prerelease opt-in; Gemini dist is `google-genai` (confirm version).
+
+**Settings creation (replacing the GUI).** The `_PROVIDERS` registry already *is*
+the setup-form schema (display names, auth modes, `fields[{key,label,secret,
+placeholder,help}]`, `setup_url`). The clarity GUI was just a renderer + a
+`Settings.save()`. Port three creation paths:
+  1. **Env vars** — already highest precedence; zero setup (dev/CI).
+  2. **Write-back** — `--provider/--api-key` on a normal run persists (decision B).
+  3. **Terminal wizard** — `config`/`--setup` subcommand that walks `_PROVIDERS`,
+     prompts per field (mask secrets via `getpass`), then **does a live API call**
+     to validate before saving (port `setup/doctor.py`'s `_probe_api`/`_probe_sdk`/
+     `_probe_copilot` + `_classify_error` — the live check proved very useful for
+     debugging auth). Also `config show` / `config set KEY VALUE` for scripting.
+  First-run, no creds: TTY → offer the wizard; non-TTY → print `setup_help` +
+  `setup_url` and exit non-zero.
+
 ---
 
 ## Item 2 — `LLMStage` class
