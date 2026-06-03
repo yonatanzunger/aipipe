@@ -8,6 +8,7 @@ license = { file = "LICENSE" }
 authors = [{ name = "Yonatan Zunger" }]
 dependencies = [
     "beartype>=0.19",
+    "pyppin>=1.1.0",
 ]
 
 [project.optional-dependencies]
