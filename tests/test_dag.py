@@ -76,6 +76,41 @@ def test_compatible_type_declarations_work():
     assert [p.name for p in recipe] == ["produces", "consumes"]
 
 
+def test_overbroad_provider_is_rejected():
+    """A producer broader than its consumer is unsafe and rejected.
+
+    dict[str, Any] is *not* a subtype of dict[str, int], so a provider that
+    only promises dict[str, Any] cannot satisfy a consumer requiring
+    dict[str, int].
+    """
+    ps = Providers()
+
+    def produces() -> dict[str, Any]:
+        return {"answer": "not an int"}
+
+    def consumes(produces: dict[str, int]) -> int:
+        return produces["answer"]
+
+    ps.add(produces)
+    with pytest.raises(TypeError, match="produces"):
+        ps.add(consumes)
+
+
+def test_type_check_is_order_independent():
+    """Incompatibility is caught even when the consumer is registered first."""
+    ps = Providers()
+
+    def consumes(produces: str) -> str:
+        return produces
+
+    def produces() -> int:
+        return 1
+
+    ps.add(consumes)  # consumer first, before any producer exists
+    with pytest.raises(TypeError, match="produces"):
+        ps.add(produces)
+
+
 def test_diamond_dependency_is_handled():
     """A shared dependency is built exactly once, not flagged as a cycle."""
     ps = Providers()

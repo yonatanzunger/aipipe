@@ -58,32 +58,44 @@ class Provider:
 class Providers:
     def __init__(self):
         self.providers: dict[str, Provider] = {}
-        self.resources: dict[str, Any] = {}
+        # The type each resource is provided as (by the provider whose name
+        # matches the resource), and the types it is required as by consumers.
+        self.provided: dict[str, Any] = {}
+        self.required: dict[str, list[tuple[str, Any]]] = {}
 
     def add(self, func: Callable[..., Any]) -> None:
         p = Provider.build(func)
-        self._check_insert(func.__name__, func.__name__, p.provides)
-        for k, v in p.requires.items():
-            self._check_insert(func.__name__, k, v)
-        for k, v in p.optionally_requires.items():
-            self._check_insert(func.__name__, k, v)
+        self._declare_provided(func.__name__, p.provides)
+        for name, annot in p.requires.items():
+            self._declare_required(func.__name__, name, annot)
+        for name, annot in p.optionally_requires.items():
+            self._declare_required(func.__name__, name, annot)
         self.providers[func.__name__] = p
 
-    def _check_insert(self, target: str, name: str, annot: Any) -> None:
-        if name not in self.resources:
-            self.resources[name] = annot
-        elif is_subhint(self.resources[name], annot):
-            # Already declared as a superclass of the current signature; keep it.
+    def _declare_provided(self, name: str, annot: Any) -> None:
+        self.provided[name] = annot
+        for consumer, required in self.required.get(name, ()):
+            self._check_compatible(name, annot, consumer, required)
+
+    def _declare_required(self, consumer: str, name: str, annot: Any) -> None:
+        self.required.setdefault(name, []).append((consumer, annot))
+        if name in self.provided:
+            self._check_compatible(name, self.provided[name], consumer, annot)
+
+    def _check_compatible(
+        self, resource: str, provided: Any, consumer: str, required: Any
+    ) -> None:
+        # The produced value must be assignable to the slot that consumes it,
+        # i.e. the provided type must be a subtype of the required type. `Any`
+        # is treated as compatible in either direction (gradual typing): an
+        # untyped provider may feed any consumer, and any value satisfies an
+        # untyped consumer.
+        if provided is Any or required is Any or is_subhint(provided, required):
             return
-        elif is_subhint(annot, self.resources[name]):
-            # Already dedclared as a subclass of the current signature; assume the
-            # new one is correct.
-            self.resources[name] = annot
-        else:
-            raise TypeError(
-                f"The resource '{name}' was previously declared as {self.resources[name]} "
-                f"but has been redeclared as {annot} by the provider '{target}'."
-            )
+        raise TypeError(
+            f"Incompatible types for resource '{resource}': provided as "
+            f"{provided} but consumer '{consumer}' requires {required}."
+        )
 
     def recipe(
         self, targets: Iterable[str], resources: dict[str, Any]
