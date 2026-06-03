@@ -1,3 +1,23 @@
-from dag.dag import Provider, Providers, make, provider
+from dag.dag import (
+    Provider,
+    ProviderRegistry,
+    ResourceInfo,
+    Source,
+    VLevel,
+    make,
+    provider,
+    registry,
+    resource,
+)
 
-__all__ = ["Provider", "Providers", "make", "provider"]
+__all__ = [
+    "Provider",
+    "ProviderRegistry",
+    "ResourceInfo",
+    "Source",
+    "VLevel",
+    "make",
+    "provider",
+    "registry",
+    "resource",
+]

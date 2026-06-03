@@ -314,7 +314,9 @@ def load_dag_dir(dagdir: Path) -> None:
   resource (not just a leaf input) is an intended feature — e.g. pin a
   mid-pipeline value to rerun only the downstream stages. Expose all resources;
   optionally annotate which are leaf inputs in `--help` for readability, but do
-  not restrict the set.
+  not restrict the set. Flag generation is safe with no sanitization because the
+  registration-time invariant guarantees every name is a valid identifier
+  (`--<name>` with the standard `-`↔`_` mapping).
 - **Flag value types are strings** from argparse. Fine for `.md` template vars
   (stringified anyway) and for `str`-typed function providers. Typed function
   inputs (e.g. `int`, `Path`) would need per-resource `type=`. Plan: look up the
@@ -339,6 +341,27 @@ Item 2 (+`add_provider`) → Item 3 → Item 5 (file I/O stages) → Item 4 (CLI
 Each step is independently testable with a stub backend.
 
 ---
+
+## Cross-cutting: resource names must be valid identifiers
+
+**Invariant (enforce at registration):** every resource name — whether it comes
+from a function/parameter name or is passed as a string by a stage factory —
+must be a valid Python identifier (`str.isidentifier()`, and reject keywords).
+Validate in `Providers.add_provider`/`add` (covering the provider's own name and
+every key of `requires`/`optionally_requires`); raise `ValueError` otherwise.
+
+Why: names are meant to be freely mixed between "came from a function" and "just
+a string", and to be usable verbatim as an argparse flag, a config-file key,
+etc. (Past experience: being able to name anything from a CLI flag or config
+file is extremely handy — but only if every name is uniformly safe.) Guaranteeing
+identifier-safety up front means Item 4 can generate `--<name>` flags with no
+sanitization or reverse-map, and config keys map 1:1 to resource names.
+
+Corollary — **name vs. value.** A name is the resource's DAG identity (an
+identifier); its value is the runtime object. A filename like `report.md` is a
+*value* (a `Path`), never a name. So a file-writing stage is a resource with an
+identifier-safe name (e.g. `report_file`) whose value is the pathname it wrote
+(see Item 5).
 
 ## Cross-cutting: reserved resource names
 
@@ -415,47 +438,45 @@ resources (optional `Path`) for resolving relative paths.
 - **read:** consumes a file path, provides its contents as `str` (text) or
   `bytes` (binary).
 - **write:** consumes a content resource (+ optional `output_dir`), writes it to
-  a file, and provides the written `Path` (so downstream stages can depend on
-  "the file was written"). Content type (`str` vs `bytes`) picks text/binary
-  mode at runtime via `isinstance`.
+  a file, and provides the written `Path` as its value (so downstream stages can
+  depend on "the file was written"). Content type (`str` vs `bytes`) picks
+  text/binary mode at runtime via `isinstance`.
+
+Per the naming invariant above, the first argument of each factory is always the
+identifier-safe **resource name**; the filename is a **value** (a literal string
+here, or later a path resource), never the name.
 
 **Proposed API (to prototype — exact shape TBD):**
 
 ```python
-# Write: generate a provider named after the output filename.
-write_file("report", "report.md")
-# -> provider "report.md": requires "report" (Any) + optional output_dir (Path),
+# Write: identifier-safe resource name `report_file`; its value is the Path written.
+write_file("report_file", content="report", filename="report.md")
+# -> provider "report_file": requires "report" (Any) + optional output_dir (Path),
 #    writes str/bytes content to (output_dir / "report.md"), provides Path.
 
-# Read: generate a provider that provides a named resource from a file.
-read_file("raw_text", "input.txt")            # text by default
-read_file("raw_bytes", "input.txt", binary=True)
+# Read: identifier-safe resource name `raw_text`; value is the file contents.
+read_file("raw_text", filename="input.txt")            # text by default
+read_file("raw_bytes", filename="input.txt", binary=True)
 # -> provider "raw_text": requires optional input_dir (Path),
 #    reads (input_dir / "input.txt"), provides str (or bytes).
 ```
 
 **API questions to play with tomorrow:**
 
-- **Provider naming vs. flag-safety.** `write_file(..., "report.md")` makes a
-  provider/resource named `report.md`. Targets are arbitrary strings so
-  `make("report.md")` is fine, but Item 4 auto-exposes every resource as a
-  `--flag` — `--report.md` isn't argparse-friendly. Resolve by sanitizing flag
-  names (`report.md` → `--report-md`) with a reverse map, or by *not* exposing
-  file-target providers as input flags. Decide which.
 - **Literal filename vs. path-from-resource.** The sketch takes a literal
-  filename + an optional dir resource (covers the common case). We may also want
-  the path itself to be a resource (computed upstream): e.g.
-  `read_path("raw_text", path_resource="src_path")`. Consider supporting both
-  forms (literal `filename=` xor `path_resource=`).
-- **What read consumes.** Above, the filename is baked in at declaration and
-  only `input_dir` is dynamic. Confirm that matches how we want to drive inputs,
-  or whether the path should be a first-class resource (per the user's "take a
-  Path as input" framing).
-- **What write provides.** Returning the written `Path` lets other stages order
-  after it. Alternative: provide nothing / provide the content unchanged.
-  Recommend `Path`.
-- **Symmetry / naming.** Settle a consistent argument order across `read_file`
-  and `write_file` (e.g. always `(resource_name, filename, *, ...)`).
+  `filename=` + an optional dir resource (covers the common case). We may also
+  want the path itself to be a resource (computed upstream): e.g.
+  `read_file("raw_text", path_resource="src_path")`. Consider supporting both
+  forms (literal `filename=` xor `path_resource=`). Either way the *resource
+  name* stays identifier-safe.
+- **Default filename.** Should `filename=` default to something derived from the
+  name (e.g. `report_file` → `report_file`), or always be explicit? Lean
+  explicit to avoid surprises.
+- **What write provides.** Returning the written `Path` as the value lets other
+  stages order after it. Alternative: provide nothing / provide the content
+  unchanged. Recommend `Path`.
+- **Symmetry / naming.** Settle a consistent signature across `read_file` and
+  `write_file` (resource name first; `content=`/`filename=` keyword-only).
 - `str` vs `bytes`: pick mode by `isinstance` on write; choose by `binary=` flag
   on read. The provided type is then `str`/`bytes` accordingly.
 

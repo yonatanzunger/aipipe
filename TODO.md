@@ -17,6 +17,11 @@
 - [ ] **Add a factory function for `LLMStage`.** Reads an `.md` file and
   returns the corresponding `LLMStage`.
 
+- [ ] **Enforce identifier-safe resource names.** Validate at registration that
+  every resource name (provider names + all require keys) is a valid Python
+  identifier; raise otherwise. Keeps names usable verbatim as CLI flags / config
+  keys and makes flag generation sanitization-free.
+
 - [ ] **Add standard file I/O stages.** `read_file`/`write_file` factory
   functions that generate file-reading/writing providers (str/bytes), using
   optional `input_dir`/`output_dir` resources. Exact API still to prototype.
