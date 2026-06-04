@@ -140,6 +140,7 @@ class LLMStage:
             provides=self.output,
             requires=requires,
             optionally_requires=optionally_requires,
+            kind="llm stage",
         )
 
     def register(self, into: Any = None) -> None:

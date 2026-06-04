@@ -144,6 +144,58 @@ A few resources have framework-wide meaning and can be set on the command line:
 - **`workdir`** (`--workdir`) — where file-output stages write (defaults to a
   fresh per-run directory).
 
+## Inspecting a pipeline
+
+`aipipe info` shows what a loaded DAG can build and what you have to give it:
+
+```bash
+$ aipipe --import pipeline info
+Targets (build these)
+  article   Path   ← outline      llm stage
+  outline   Path   ← topic        llm stage
+
+Inputs (supply these)
+  --topic   Any    → outline
+
+Reserved
+  --model  --verbosity  --vmodule  --workdir
+```
+
+An *input* is a resource that something requires but nothing produces — so you
+must supply it. Pass a resource name to drill into one (its type, its provider,
+and who consumes it):
+
+```bash
+aipipe -i pipeline info outline
+```
+
+`--layered` prints the build order (each stage once, with its direct inputs —
+diamonds and shared inputs included), and `--mermaid` emits a diagram. Mermaid
+text renders directly on GitHub and in many editors; `--mermaid --link` instead
+prints a [mermaid.live](https://mermaid.live) URL that renders in your browser
+(the diagram is encoded in the URL fragment, so nothing is uploaded):
+
+```bash
+aipipe -i pipeline info --layered
+aipipe -i pipeline info --mermaid           # Mermaid source
+aipipe -i pipeline info --mermaid --link    # a click-to-view link
+```
+
+To preview a specific build without running anything, add `--dry-run` (`-n`) to
+`make`. It reuses the exact invocation — same flags — and shows the ordered plan,
+which inputs are supplied, and (in red) any you're still missing:
+
+```bash
+$ aipipe -i pipeline make article -n --topic "tidal energy"
+Dry run — would build: article
+
+Plan (2 steps)
+   1. outline   [llm stage]  ← topic
+   2. article   [llm stage]  ← outline
+
+Supplied: topic
+```
+
 ## Development
 
 ```bash

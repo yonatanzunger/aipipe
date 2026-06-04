@@ -35,6 +35,23 @@ def _run_config(args: argparse.Namespace) -> int:
     return 2
 
 
+def _run_info(args: argparse.Namespace) -> int:
+    from dag.inspect import describe, layered, mermaid, mermaid_live_url, overview
+
+    resource = getattr(args, "resource", None)
+    targets = [resource] if resource else None
+    if args.mermaid:
+        diagram = mermaid(registry, targets)
+        print(mermaid_live_url(diagram) if args.link else diagram)
+    elif args.layered:
+        layered(registry, targets)
+    elif resource:
+        describe(registry, resource)
+    else:
+        overview(registry)
+    return 0
+
+
 def _run_build(args: argparse.Namespace) -> int:
     targets = getattr(args, "target", [])
     if not targets:
@@ -49,6 +66,13 @@ def _run_build(args: argparse.Namespace) -> int:
         for n in registry.resources
         if getattr(args, n, None) is not None
     }
+
+    if args.dry_run:
+        from dag.inspect import dry_run
+
+        dry_run(registry, targets, resources.keys())
+        return 0
+
     logger_factory = LoggerFactory(resources)
     logger = logger_factory.logger()
 
@@ -108,8 +132,31 @@ def main(argv: list[str] | None = None) -> int:
     )
     unset_p.add_argument("key", help="e.g. ANTHROPIC_API_KEY")
 
+    info_p = subparsers.add_parser(
+        "info", help="Show information about the loaded DAG(s)"
+    )
+    info_p.add_argument(
+        "resource", nargs="?", help="Describe this resource / root the graph here"
+    )
+    info_p.add_argument(
+        "--layered", action="store_true", help="Show the build order (topological)"
+    )
+    info_p.add_argument(
+        "--mermaid", action="store_true", help="Emit a Mermaid diagram of the DAG"
+    )
+    info_p.add_argument(
+        "--link",
+        action="store_true",
+        help="With --mermaid, print a mermaid.live link instead of the source",
+    )
+    info_p.set_defaults(_handler=_run_info)
+
     build = subparsers.add_parser("make", help="Make one or more target resources")
     build.add_argument("target", nargs="*", help="Targets to build")
+    build.add_argument(
+        "--dry-run", "-n", action="store_true",
+        help="Show the plan without running anything",
+    )
     registry.add_arguments(build)
     build.set_defaults(_handler=_run_build)
 

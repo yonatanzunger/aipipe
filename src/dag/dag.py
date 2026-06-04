@@ -49,7 +49,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import IntEnum
 from collections.abc import Callable
-from typing import Union, get_origin, get_args, Any, Iterable
+from typing import Union, get_origin, get_args, Any, Iterable, NamedTuple
 from inspect import signature, Signature
 from pathlib import Path
 from types import NoneType
@@ -83,6 +83,10 @@ class Provider:
     provides: TypeSig
     requires: dict[str, TypeSig]
     optionally_requires: dict[str, TypeSig]
+    # A short human-readable description of what kind of provider this is
+    # (e.g. "function", "llm stage"). Used by introspection/`info`; extensible
+    # — new provider generators set their own.
+    kind: str = "function"
 
     def __call__(self, **kwargs: Any) -> Any:
         """You can call the provider with the *full* set of resources. Only the relevant arguments
@@ -116,6 +120,13 @@ class Provider:
 
 def _annot(x: TypeSig) -> TypeSig:
     return x if x is not Signature.empty else Any
+
+
+class Plan(NamedTuple):
+    """The result of :meth:`ProviderRegistry.plan`."""
+
+    steps: list["Provider"]  # providers to run, in execution order
+    missing: list[str]  # required resources with no provider (inputs to supply)
 
 
 @dataclass
@@ -268,15 +279,20 @@ class ProviderRegistry:
             f"{provided_type} but consumer '{consumer}' requires {required_type}."
         )
 
-    def recipe(
-        self, targets: Iterable[str], resources: Iterable[str]
-    ) -> list[Provider]:
-        """Compute the sequence of tasks you need to build the given targets from the
-        given resources.
+    def plan(self, targets: Iterable[str], resources: Iterable[str]) -> Plan:
+        """Compute the build plan for *targets* given the available *resources*.
+
+        Returns a :class:`Plan` (``steps``, ``missing``): ``steps`` are the
+        providers to run in execution order; ``missing`` lists required resources
+        that are neither supplied nor produced by any provider (i.e. inputs the
+        caller must provide). Unlike :meth:`recipe`, missing inputs are reported
+        rather than raised — useful for dry runs and graph views. Cycles raise.
         """
         available = set(resources)
-        tasks: list[Provider] = []
-        scheduled: set[str] = set()  # resources whose provider is already in tasks
+        steps: list[Provider] = []
+        scheduled: set[str] = set()  # resources whose provider is already in steps
+        missing: list[str] = []
+        missing_seen: set[str] = set()
         path: list[str] = []  # resources on the current DFS path
         on_path: set[str] = set()  # same, as a set for O(1) membership tests
 
@@ -286,7 +302,10 @@ class ProviderRegistry:
             if target in available or target in scheduled:
                 return
             if target not in self.providers:
-                raise ValueError(f"No provider registered that makes '{target}'")
+                if target not in missing_seen:
+                    missing_seen.add(target)
+                    missing.append(target)
+                return
             if target in on_path:
                 cycle = " -> ".join([*path[path.index(target) :], target])
                 raise ValueError(f"Cyclic dependency found: {cycle}")
@@ -299,14 +318,27 @@ class ProviderRegistry:
             on_path.discard(target)
 
             # Post-order: a provider is appended only after all of its
-            # dependencies, so the recipe is already in execution order.
+            # dependencies, so the steps are already in execution order.
             scheduled.add(target)
-            tasks.append(self.providers[target])
+            steps.append(self.providers[target])
 
         for target in targets:
             visit(target)
 
-        return tasks
+        return Plan(steps, missing)
+
+    def recipe(
+        self, targets: Iterable[str], resources: Iterable[str]
+    ) -> list[Provider]:
+        """Compute the sequence of tasks you need to build the given targets from the
+        given resources. Raises if a required resource has no provider.
+        """
+        result = self.plan(targets, resources)
+        if result.missing:
+            raise ValueError(
+                f"No provider registered that makes '{result.missing[0]}'"
+            )
+        return result.steps
 
     def add_arguments(self, parser: argparse.ArgumentParser) -> None:
         """Add all our known resources to the parser."""
