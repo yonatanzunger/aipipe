@@ -72,6 +72,6 @@ def test_non_identifier_stem_rescued_by_front_matter(tmp_path):
 def test_end_to_end_via_make(tmp_path, reg, backend):
     p = tmp_path / "summary.md"
     p.write_text("---\nsystem: Be brief.\n---\nSummarize: {{document}}")
-    stage_from_file(p, backend=backend).register(reg)
+    stage_from_file(p, output=str, backend=backend).register(reg)
     out = make("summary", document="hello")
     assert out["summary"] == "[fake-default|sys=Be brief.] Summarize: hello"

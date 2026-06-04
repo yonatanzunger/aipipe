@@ -9,6 +9,7 @@ corresponding :class:`LLMClient`.
 from __future__ import annotations
 
 import asyncio
+import functools
 import json
 import os
 import re
@@ -38,6 +39,28 @@ from llm.types import (
     ToolHandler,
     ToolUseBlock,
 )
+
+# Env vars that, if present, make the Claude CLI use an external API key instead
+# of its own (OAuth) login. This backend *is* the "use Claude Code's login" auth
+# mode, so we hide these for the duration of each SDK call — otherwise a stale or
+# unintended key (e.g. one a tool injected into the environment) silently
+# overrides the login and fails with "Invalid API key".
+_EXTERNAL_KEY_VARS = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")
+
+
+def _claude_code_auth(fn):
+    """Wrap an async SDK-query method so it runs with external Anthropic keys
+    hidden from the subprocess's inherited environment."""
+
+    @functools.wraps(fn)
+    async def wrapper(self, *args, **kwargs):
+        saved = {k: os.environ.pop(k) for k in _EXTERNAL_KEY_VARS if k in os.environ}
+        try:
+            return await fn(self, *args, **kwargs)
+        finally:
+            os.environ.update(saved)
+
+    return wrapper
 
 
 def _extract_summary_text(entry: dict[str, Any]) -> str:
@@ -282,6 +305,7 @@ class SdkChatBackend(ChatBackend):
 
         return result
 
+    @_claude_code_auth
     async def _run_query(
         self,
         user_message: str,
@@ -632,6 +656,7 @@ class SdkChatBackend(ChatBackend):
     # Path B: SDK query() fallback (no API key — e.g. inside Claude Code)
     # ------------------------------------------------------------------
 
+    @_claude_code_auth
     async def _arun_tool_loop_sdk(
         self,
         *,

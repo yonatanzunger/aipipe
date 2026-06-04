@@ -8,6 +8,7 @@ from dag.dag import (
     registry,
     resource,
 )
+from dag.loader import import_providers
 from dag.logger import Logger, LoggerFactory
 
 __all__ = [
@@ -17,6 +18,7 @@ __all__ = [
     "ProviderRegistry",
     "ResourceInfo",
     "Source",
+    "import_providers",
     "make",
     "provider",
     "registry",

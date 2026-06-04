@@ -40,9 +40,19 @@ resource("model", str, help="LLM model name to use for LLM stages")
 class LLMStage:
     """A DAG provider whose output is an LLM completion of a rendered template.
 
+    The ``output`` type controls how the completion is surfaced:
+
+    - ``str``: the completion text is the resource's value (and is
+      substituted inline wherever a downstream stage references it).
+    - ``Path`` (default): the completion is written to ``workdir/<name><extension>`` and
+      that path becomes the resource's value, so downstream ``{{var}}`` renders
+      the *filename* (which an agentic backend can read on its own).
+
     Args:
         name: The resource this stage provides (must be a valid identifier).
         template: The prompt text, with ``{{var}}`` placeholders.
+        output: ``str`` or ``Path`` — see above.
+        extension: File extension used when ``output is Path``.
         model: Optional per-stage model override. Highest precedence; falls back
             to the ``model`` resource, then the backend default.
         system: Optional system prompt for the completion.
@@ -55,6 +65,8 @@ class LLMStage:
         name: str,
         template: str,
         *,
+        output: type = Path,
+        extension: str = ".md",
         model: str | None = None,
         system: str | None = None,
         backend: "ChatBackend | None" = None,
@@ -63,6 +75,8 @@ class LLMStage:
         self.template = template
         # De-duplicated, in order of first appearance.
         self.variables: list[str] = list(dict.fromkeys(_VAR.findall(template)))
+        self.output = output
+        self.extension = extension
         self.model = model
         self.system = system
         self.backend = backend
@@ -71,8 +85,12 @@ class LLMStage:
         """Substitute ``{{var}}`` placeholders using *values* (stringified)."""
         return _VAR.sub(lambda m: str(values[m.group(1)]), self.template)
 
-    def __call__(self, logger: Logger, **kwargs: Any) -> str:
-        """Render the template from the supplied resources and complete it."""
+    def __call__(self, logger: Logger, **kwargs: Any) -> str | Path:
+        """Render the template from the supplied resources and complete it.
+
+        Returns the completion text, or — when ``output is Path`` — the path to
+        a file the completion was written to (under the ``workdir`` resource).
+        """
         model = self.model or kwargs.get("model")
         prompt = self.render(kwargs)
         logger.log(1, "Model", model)
@@ -81,7 +99,21 @@ class LLMStage:
             prompt, system=self.system, model=model, backend=self.backend
         )
         logger.log(1, "Response", response)
+        if self.output is Path:
+            return self._write(response, kwargs["workdir"], logger)
         return response
+
+    def _write(self, text: str, workdir: Path, logger: Logger) -> Path:
+        """Write the completion to ``workdir/<name><extension>`` and return it.
+
+        The directory is created lazily here, so runs with no file-output stages
+        leave no empty directories behind.
+        """
+        workdir.mkdir(parents=True, exist_ok=True)
+        path = workdir / f"{self.name}{self.extension}"
+        path.write_text(text, encoding="utf-8")
+        logger.log(1, "Wrote", path)
+        return path
 
     def as_provider(self) -> Provider:
         """Build the :class:`~dag.dag.Provider` representing this stage.
@@ -89,7 +121,8 @@ class LLMStage:
         Template variables become required resources (typed ``Any``, since they
         are stringified into the prompt); the reserved ``model`` resource is an
         optional requirement so a globally-supplied ``model`` reaches the stage
-        without forcing it to be provided.
+        without forcing it to be provided. A file-output stage (``output is
+        Path``) additionally requires the ``workdir`` it writes into.
         """
         requires: dict[str, Any] = {v: Any for v in self.variables}
         optionally_requires: dict[str, Any] = {}
@@ -99,10 +132,12 @@ class LLMStage:
         # Provider.__call__ forwards it to __call__.
         if "logger" not in requires:
             optionally_requires["logger"] = Logger
+        if self.output is Path and "workdir" not in requires:
+            requires["workdir"] = Path
         return Provider(
             name=self.name,
             func=self,
-            provides=str,
+            provides=self.output,
             requires=requires,
             optionally_requires=optionally_requires,
         )
@@ -112,9 +147,13 @@ class LLMStage:
         (into or registry).add(self.as_provider())
 
 
+_FILE_OUTPUT_WORDS = {"file", "path"}
+
+
 def stage_from_file(
     path: str | Path,
     *,
+    output: type = Path,
     model: str | None = None,
     backend: "ChatBackend | None" = None,
 ) -> LLMStage:
@@ -123,8 +162,9 @@ def stage_from_file(
     The file is parsed as Markdown with optional YAML front matter (see
     :class:`~dag.markdown.MarkdownDocument`). The resource name defaults to the
     file's stem (e.g. ``summary.md`` → ``summary``); front matter may override
-    ``name`` and set ``model`` / ``system``. Front-matter ``model`` takes
-    precedence over the *model* argument. Side-effect-free — does not register.
+    ``name``, set ``model`` / ``system`` / ``extension``, and choose file output
+    via ``output: file`` (or ``path``). Front-matter values take precedence over
+    the *output* / *model* arguments. Side-effect-free — does not register.
     """
     path = Path(path)
     doc = MarkdownDocument.from_file(path)
@@ -135,10 +175,17 @@ def stage_from_file(
             f"Resource name {name!r} (from {path}) is not a valid Python "
             f"identifier. Rename the file or set `name:` in its front matter."
         )
-    return LLMStage(
+    fm_output = meta.get("output")
+    if fm_output is not None:
+        output = Path if str(fm_output).lower() in _FILE_OUTPUT_WORDS else str
+    stage = LLMStage(
         name=name,
         template=doc.body,
+        output=output,
+        extension=meta.get("extension", ".md"),
         model=meta.get("model") or model,
         system=meta.get("system"),
         backend=backend,
     )
+    stage.__doc__ = f"Produced by {path}"
+    return stage

@@ -140,18 +140,22 @@ class Settings:
             except ImportError:
                 pass
 
-        # 3. Read secrets from keyring (overrides .env values).
+        # 3. Read secrets from keyring (overrides .env values). Empty or
+        # whitespace-only values are treated as unset — they're usually the
+        # residue of a cleared key and would otherwise masquerade as a real
+        # (but invalid) credential. We deliberately do NOT push these into
+        # os.environ: clients receive their key explicitly (see the factory),
+        # and a stray key in the environment can hijack subprocess auth (e.g.
+        # the Claude CLI preferring it over its own login).
         for attr, env_key in _SECRET_KEYS.items():
             value = keyring.get_password(SERVICE, env_key)
-            if value:
+            if value and value.strip():
                 setattr(settings, attr, value)
-                # Also inject into os.environ so LLM SDKs see them.
-                os.environ.setdefault(env_key, value)
 
-        # 4. Environment variables override everything.
+        # 4. Environment variables override everything (empty values ignored).
         for attr, env_key in _ALL_KEYS.items():
             value = os.environ.get(env_key)
-            if value:
+            if value and value.strip():
                 setattr(settings, attr, value)
 
         # Migrate legacy "claude-sdk" provider → anthropic + claude_sdk auth.

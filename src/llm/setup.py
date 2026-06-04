@@ -120,8 +120,23 @@ def config_show(settings: Settings | None = None) -> None:
 
 
 def config_set(env_key: str, value: str, settings: Settings | None = None) -> None:
-    """Set one config/credential value by its env-var name and save."""
+    """Set one config/credential value by its env-var name and save.
+
+    An empty/whitespace value clears the setting (equivalent to ``unset``), so
+    it never leaves an empty string masquerading as a real credential.
+    """
     s = settings if settings is not None else Settings.current()
+    if not value.strip():
+        config_unset(env_key, settings=s)
+        return
     s.set(env_key, value)
     s.save()
     print(f"Set {env_key}.")
+
+
+def config_unset(env_key: str, settings: Settings | None = None) -> None:
+    """Clear one config/credential value by its env-var name and save."""
+    s = settings if settings is not None else Settings.current()
+    s.set(env_key, None)
+    s.save()
+    print(f"Unset {env_key}.")

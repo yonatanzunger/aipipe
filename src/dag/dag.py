@@ -46,10 +46,12 @@ import argparse
 from beartype.door import is_subhint
 from copy import copy
 from dataclasses import dataclass
+from datetime import datetime
 from enum import IntEnum
 from collections.abc import Callable
 from typing import Union, get_origin, get_args, Any, Iterable
 from inspect import signature, Signature
+from pathlib import Path
 from types import NoneType
 from dag.logger import Logger, LoggerFactory
 
@@ -138,7 +140,7 @@ class ResourceInfo:
             names.extend(_as_arg(alias) for alias in self.aliases)
         parser.add_argument(
             *names,
-            type=self.type if callable(self.type) else str,
+            type=self.type if callable(self.type) and self.type is not Any else str,
             required=False,
             help=self.help,
         )
@@ -348,6 +350,17 @@ resource(
 )
 resource("logger", annot=Logger, available_on_cl=False)
 
+
+@provider
+def workdir() -> Path:
+    """The working directory for this run (created lazily by file stages).
+
+    This is often overridden on the command line.
+    """
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+    return (Path.cwd() / ".aipipe" / "runs" / stamp).resolve()
+
+
 _AMBIENT_RESOURCES = ("logger",)
 
 
@@ -368,11 +381,13 @@ def make(
     if isinstance(targets, str):
         targets = (targets,)
     resources = copy(kwargs)
-    logger_factory = logger_factory or LoggerFactory(resources)
-    logger = logger_factory.logger()
+
     # `logger` is hand-forged below and injected into every provider call rather
     # than built by the graph, so it's always available to providers that
     # declare it.
+    logger_factory = logger_factory or LoggerFactory(resources)
+    logger = logger_factory.logger()
+
     recipe = registry.recipe(targets, [*resources.keys(), *_AMBIENT_RESOURCES])
 
     logger.log(1, "Targets", sorted(list(targets)))
@@ -388,6 +403,11 @@ def make(
         logger.log(1, "Building", provider.name)
         resources[provider.name] = provider(
             **{**resources, "logger": logger_factory.logger(provider.name)}
+        )
+        logger.log(
+            1 if provider.name == "workdir" else 2,
+            provider.name,
+            resources[provider.name],
         )
 
     return resources

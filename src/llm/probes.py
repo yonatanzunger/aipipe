@@ -79,10 +79,18 @@ def _probe_sdk() -> ProbeResult:
     from llm.impl.claude_sdk import SdkChatBackend
 
     backend = SdkChatBackend()
+    # The SDK can deliver a non-empty reply *and* then report an error (e.g. the
+    # CLI exiting with an auth failure after streaming some text). It surfaces
+    # that via on_warning rather than raising, so a non-empty reply alone is not
+    # proof of success — capture warnings and treat them as failure.
+    warnings: list[str] = []
+    backend.on_warning = warnings.append
     try:
         reply = backend.chat("Say ok", system_prompt="Respond with exactly: ok", model="fast")
     finally:
         backend.disconnect()
+    if warnings:
+        return ProbeResult(ok=False, message=warnings[-1])
     if reply and reply.strip():
         return ProbeResult(ok=True, message="Claude SDK responded successfully")
     return ProbeResult(ok=False, message="Claude SDK returned an empty response")

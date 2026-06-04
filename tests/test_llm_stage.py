@@ -1,3 +1,4 @@
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -51,12 +52,19 @@ def test_render_stringifies_values():
 
 
 def test_as_provider_wiring():
-    p = LLMStage("summary", "sum {{doc}} for {{user}}").as_provider()
+    p = LLMStage("summary", "sum {{doc}} for {{user}}", output=str).as_provider()
     assert p.name == "summary"
     assert p.provides is str
-    assert set(p.requires) == {"doc", "user"}
+    assert set(p.requires) == {"doc", "user"}  # str output needs no workdir
     assert all(t is Any for t in p.requires.values())
     assert "model" in p.optionally_requires  # reserved model resource
+
+
+def test_default_output_is_path():
+    # Output defaults to Path (file output); see test_file_stage for behavior.
+    p = LLMStage("summary", "sum {{doc}}").as_provider()
+    assert p.provides is Path
+    assert "workdir" in p.requires
 
 
 def test_model_not_duplicated_when_a_template_var():
@@ -73,27 +81,27 @@ def test_model_not_duplicated_when_a_template_var():
 
 
 def test_make_runs_stage(reg, backend):
-    LLMStage("summary", "Summarize: {{document}}", backend=backend).register(reg)
+    LLMStage("summary", "Summarize: {{document}}", output=str, backend=backend).register(reg)
     out = make("summary", document="hello world")
     assert out["summary"] == "[fake-default] Summarize: hello world"
 
 
 def test_make_chains_stages(reg, backend):
-    LLMStage("draft", "Draft from {{topic}}", backend=backend).register(reg)
+    LLMStage("draft", "Draft from {{topic}}", output=str, backend=backend).register(reg)
     # second stage consumes the first stage's output as a {{draft}} variable
-    LLMStage("polished", "Polish: {{draft}}", backend=backend).register(reg)
+    LLMStage("polished", "Polish: {{draft}}", output=str, backend=backend).register(reg)
     out = make("polished", topic="cats")
     assert out["draft"] == "[fake-default] Draft from cats"
     assert out["polished"] == "[fake-default] Polish: [fake-default] Draft from cats"
 
 
 def test_model_resource_drives_stage(reg, backend):
-    LLMStage("answer", "Q: {{q}}", backend=backend).register(reg)
+    LLMStage("answer", "Q: {{q}}", output=str, backend=backend).register(reg)
     out = make("answer", q="why", model="claude-x")
     assert out["answer"] == "[claude-x] Q: why"
 
 
 def test_stage_model_overrides_resource(reg, backend):
-    LLMStage("answer", "Q: {{q}}", model="stage-model", backend=backend).register(reg)
+    LLMStage("answer", "Q: {{q}}", output=str, model="stage-model", backend=backend).register(reg)
     out = make("answer", q="why", model="resource-model")
     assert out["answer"] == "[stage-model] Q: why"

@@ -12,17 +12,14 @@ from __future__ import annotations
 
 import argparse
 import sys
-import importlib.machinery
 from pathlib import Path
 from dag.dag import registry, make, LoggerFactory
-from dag.llm_stage import stage_from_file
-from pyppin.base.import_file import import_file
-from pyppin.os.bulk_import import bulk_import
+from dag.loader import import_providers
 from pyppin.text.tty import tty, TTY
 
 
 def _run_config(args: argparse.Namespace) -> int:
-    from llm.setup import config_set, config_show, run_wizard
+    from llm.setup import config_set, config_show, config_unset, run_wizard
 
     if args.config_command == "setup":
         return 0 if run_wizard() else 1
@@ -32,48 +29,37 @@ def _run_config(args: argparse.Namespace) -> int:
     if args.config_command == "set":
         config_set(args.key, args.value)
         return 0
+    if args.config_command == "unset":
+        config_unset(args.key)
+        return 0
     return 2
 
 
 def _run_build(args: argparse.Namespace) -> int:
     targets = getattr(args, "target", [])
-    if targets:
-        # Only pass flags the user actually set: a resource present in the
-        # inputs (even as None) is treated by make() as already-supplied, which
-        # would skip its provider.
-        resources = {
-            n: getattr(args, n)
-            for n in registry.resources
-            if getattr(args, n, None) is not None
-        }
-        logger_factory = LoggerFactory(resources)
-        result = make(targets, logger_factory=logger_factory, **resources)
-        logger = logger_factory.logger()
-        for target in targets:
-            if target in result:
-                logger.log(0, target, result[target], truncate=False)
-            else:
-                logger.log(0, target, tty(TTY.RED, "NOT PRESENT"))
-
-    else:
+    if not targets:
         print("Nothing to build.")
+        return 0
 
+    # Only pass flags the user actually set: a resource present in the inputs
+    # (even as None) is treated by make() as already-supplied, which would skip
+    # its provider.
+    resources = {
+        n: getattr(args, n)
+        for n in registry.resources
+        if getattr(args, n, None) is not None
+    }
+    logger_factory = LoggerFactory(resources)
+    logger = logger_factory.logger()
+
+    result = make(targets, logger_factory=logger_factory, **resources)
+
+    for target in targets:
+        if target in result:
+            logger.log(0, target, result[target], truncate=False)
+        else:
+            logger.log(0, target, tty(TTY.RED, text="NOT PRESENT"))
     return 0
-
-
-def _load_md_file(src: Path) -> bool:
-    if src.suffix == ".md":
-        registry.add(stage_from_file(src).as_provider())
-    return True
-
-
-def import_providers(src: Path) -> None:
-    if src.is_dir():
-        bulk_import(src, visitor=_load_md_file)
-    elif src.suffix == ".md":
-        _load_md_file(src)
-    elif src.suffix in importlib.machinery.all_suffixes():
-        import_file(src)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -91,7 +77,7 @@ def main(argv: list[str] | None = None) -> int:
         type=Path,
         help="Files or directories from which to read DAGs",
     )
-    pre_args, _ = pre.parse_known_args(argv)
+    pre_args, extra = pre.parse_known_args(argv)
     for src in pre_args.imports:
         import_providers(src)
 
@@ -117,6 +103,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     set_p.add_argument("key", help="e.g. ANTHROPIC_API_KEY or AIPIPE_LLM_PROVIDER")
     set_p.add_argument("value")
+    unset_p = cfg_sub.add_parser(
+        "unset", help="Clear one config/credential value by its env-var name"
+    )
+    unset_p.add_argument("key", help="e.g. ANTHROPIC_API_KEY")
 
     build = subparsers.add_parser("make", help="Make one or more target resources")
     build.add_argument("target", nargs="*", help="Targets to build")
@@ -124,7 +114,7 @@ def main(argv: list[str] | None = None) -> int:
     build.set_defaults(_handler=_run_build)
 
     # Now actually parse the arguments!
-    args = parser.parse_args(argv)
+    args = parser.parse_args(extra)
     handler = getattr(args, "_handler", None)
     if handler is None:
         parser.print_help(sys.stderr)
